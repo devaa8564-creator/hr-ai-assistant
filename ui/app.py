@@ -1,8 +1,5 @@
 """
-Step 6 - Streamlit Chat UI with live log viewer
-
-Run:
-    streamlit run ui/app.py
+Step 6 - Streamlit Chat UI with deep debug log viewer
 """
 
 import os
@@ -37,13 +34,14 @@ if "messages" not in st.session_state:
                 "- Holiday / annual leave balance\n"
                 "- Sick leave policy\n"
                 "- Leave entitlements\n\n"
-                "Just ask in plain English! (e.g. *'How many holiday days do I have left? My ID is EMP001'*)"
+                "Just ask in plain English!\n"
+                "e.g. *'How many holiday days do I have left? My ID is EMP001'*"
             ),
         }
     ]
 
 if "all_logs" not in st.session_state:
-    st.session_state.all_logs = []
+    st.session_state.all_logs = []   # list of (q_num, level, message)
 
 if "agent_ready" not in st.session_state:
     try:
@@ -54,28 +52,56 @@ if "agent_ready" not in st.session_state:
         st.session_state.agent_ready = False
         st.session_state.agent_error = str(e)
 
-# ── Layout: chat on left, logs on right ───────────────────────────────────────
-col_chat, col_logs = st.columns([2, 1])
+# ── Colour map for log levels ─────────────────────────────────────────────────
+LEVEL_STYLE = {
+    "INFO":  {"color": "#90caf9", "prefix": "INFO "},   # light blue
+    "DEBUG": {"color": "#b0bec5", "prefix": "DBG  "},   # grey
+    "OK":    {"color": "#a5d6a7", "prefix": "OK   "},   # green
+    "WARN":  {"color": "#ffcc80", "prefix": "WARN "},   # amber
+    "ERROR": {"color": "#ef9a9a", "prefix": "ERR  "},   # red
+    "CODE":  {"color": "#ce93d8", "prefix": "     "},   # purple (code/preview)
+}
 
-# ── LEFT: Sidebar ─────────────────────────────────────────────────────────────
+def render_logs(logs):
+    """Render (q_num, level, message) tuples as a styled HTML debug console."""
+    lines = []
+    for q_num, level, msg in logs:
+        style = LEVEL_STYLE.get(level, LEVEL_STYLE["DEBUG"])
+        colour  = style["color"]
+        prefix  = style["prefix"]
+        q_label = f"<span style='color:#546e7a;'>[Q{q_num}]</span> " if q_num else ""
+        escaped = msg.replace("<", "&lt;").replace(">", "&gt;")
+        lines.append(
+            f'<div style="font-family:Consolas,monospace; font-size:11.5px; '
+            f'color:{colour}; padding:1px 4px; white-space:pre-wrap; word-break:break-all;">'
+            f'{q_label}'
+            f'<span style="color:#546e7a;">{prefix}</span>'
+            f'{escaped}'
+            f'</div>'
+        )
+    return (
+        '<div style="background:#0d1117; padding:10px 6px; border-radius:8px; '
+        'max-height:650px; overflow-y:auto; border:1px solid #30363d;">'
+        + "".join(lines)
+        + "</div>"
+    )
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Employee Directory")
-    st.caption("Reference IDs for testing")
     try:
-        employees = list_employees()
-        for emp in employees:
+        for emp in list_employees():
             st.text(f"{emp['employee_id']} - {emp['name']}")
     except Exception:
-        st.warning("Could not connect to database.\nRun: docker-compose up -d")
+        st.warning("DB not reachable. Run: docker-compose up -d")
 
     st.divider()
     st.header("System Status")
     if st.session_state.get("agent_ready"):
         st.success("Ollama connected")
-        st.info(f"Model: llama3")
+        st.caption("Model: llama3")
     else:
-        err = st.session_state.get("agent_error", "")
-        st.error(f"Ollama not ready\n{err}" if err else "Ollama not reachable")
+        st.error("Ollama not reachable")
 
     st.divider()
     if st.button("Clear Chat + Logs"):
@@ -83,16 +109,16 @@ with st.sidebar:
         st.session_state.all_logs = []
         st.rerun()
 
-# ── MIDDLE: Chat ──────────────────────────────────────────────────────────────
+# ── Main layout: chat left, logs right ───────────────────────────────────────
+col_chat, col_logs = st.columns([2, 1])
+
+# ── Chat column ───────────────────────────────────────────────────────────────
 with col_chat:
     st.subheader("Chat")
-
-    # Display message history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Handle new input
     if prompt := st.chat_input("Ask your HR question here..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -106,63 +132,56 @@ with col_chat:
             else:
                 with st.spinner("Thinking..."):
                     try:
-                        response, logs = ask(prompt)
-                        # Prefix logs with question number
-                        q_num = len([m for m in st.session_state.messages if m["role"] == "user"])
-                        labelled = [f"[Q{q_num}] {entry}" for entry in logs]
-                        st.session_state.all_logs.extend(labelled)
+                        response, raw_logs = ask(prompt)
+                        q_num = len([m for m in st.session_state.messages
+                                     if m["role"] == "user"])
+                        for level, msg_text in raw_logs:
+                            st.session_state.all_logs.append((q_num, level, msg_text))
                     except Exception as e:
                         response = f"Sorry, I encountered an error: {e}"
-                        st.session_state.all_logs.append(f"ERROR: {e}")
+                        q_num = len([m for m in st.session_state.messages
+                                     if m["role"] == "user"])
+                        st.session_state.all_logs.append((q_num, "ERROR", str(e)))
+
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
                 st.rerun()
 
-# ── RIGHT: Live Log Viewer ────────────────────────────────────────────────────
+# ── Debug log column ──────────────────────────────────────────────────────────
 with col_logs:
-    st.subheader("Pipeline Logs")
-    st.caption("Live trace of each step for every question")
+    st.subheader("Debug Trace")
+
+    # Legend
+    legend_html = " &nbsp; ".join(
+        f'<span style="color:{v["color"]}; font-family:monospace; font-size:11px;">'
+        f'{v["prefix"].strip() or "CODE"}</span>'
+        for v in LEVEL_STYLE.values()
+    )
+    st.markdown(f"<small>{legend_html}</small>", unsafe_allow_html=True)
 
     if not st.session_state.all_logs:
-        st.info("Logs will appear here when you ask a question.")
+        st.info("Ask a question to see the full debug trace here.")
     else:
-        # Show logs newest first, colour coded by step
-        log_lines = []
-        for entry in reversed(st.session_state.all_logs):
-            if "Step 1" in entry:
-                colour = "#4fc3f7"   # blue
-            elif "Step 2" in entry:
-                colour = "#81c784"   # green
-            elif "Step 3" in entry:
-                colour = "#ffb74d"   # orange
-            elif "Step 4" in entry:
-                colour = "#ce93d8"   # purple
-            elif "Step 5" in entry:
-                colour = "#f48fb1"   # pink
-            elif "ERROR" in entry:
-                colour = "#ef5350"   # red
-            else:
-                colour = "#b0bec5"   # grey
+        # Filter controls
+        show_debug = st.checkbox("Show DEBUG lines", value=True)
+        show_code  = st.checkbox("Show CODE previews", value=True)
 
-            log_lines.append(
-                f'<div style="font-family:monospace; font-size:12px; '
-                f'color:{colour}; padding:2px 0; border-bottom:1px solid #222;">'
-                f'{entry}</div>'
-            )
+        filtered = [
+            (q, lvl, msg) for q, lvl, msg in reversed(st.session_state.all_logs)
+            if not (lvl == "DEBUG" and not show_debug)
+            if not (lvl == "CODE"  and not show_code)
+        ]
 
-        st.markdown(
-            '<div style="background:#1e1e1e; padding:10px; border-radius:8px; '
-            'max-height:600px; overflow-y:auto;">'
-            + "".join(log_lines)
-            + "</div>",
-            unsafe_allow_html=True,
+        st.markdown(render_logs(filtered), unsafe_allow_html=True)
+
+        # Download
+        raw_text = "\n".join(
+            f"[Q{q}] [{lvl}] {msg}"
+            for q, lvl, msg in st.session_state.all_logs
         )
-
-        # Raw log download button
-        raw_logs = "\n".join(st.session_state.all_logs)
         st.download_button(
-            label="Download logs as .txt",
-            data=raw_logs,
-            file_name="hr_assistant_logs.txt",
+            label="Download full debug log",
+            data=raw_text,
+            file_name="hr_debug_log.txt",
             mime="text/plain",
         )
