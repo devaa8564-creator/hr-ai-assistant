@@ -121,5 +121,7 @@ def list_employees() -> list:
 
 
 if __name__ == "__main__":
-    print("Starting HR MCP Server...")
-    mcp.run()
+    port = int(os.getenv("MCP_PORT", "8001"))
+    print(f"Starting HR MCP Server on http://localhost:{port}/sse ...")
+    print("Tools exposed: get_leave_info, search_policy, list_employees")
+    mcp.run(transport="sse", host="0.0.0.0", port=port)

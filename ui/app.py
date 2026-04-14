@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from dotenv import load_dotenv
 load_dotenv()
 
-from mcp_server.server import list_employees
+from mcp_server.client import call_tool, ping
 from rag.orchestrator import build_agent, ask
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -90,13 +90,22 @@ def render_logs(logs):
 with st.sidebar:
     st.header("Employee Directory")
     try:
-        for emp in list_employees():
+        employees = call_tool("list_employees", {})
+        for emp in (employees or []):
             st.text(f"{emp['employee_id']} - {emp['name']}")
     except Exception:
-        st.warning("DB not reachable. Run: docker-compose up -d")
+        st.warning("MCP server not reachable.\nRun: python mcp_server/server.py")
 
     st.divider()
     st.header("System Status")
+    mcp_ok = ping()
+    if mcp_ok:
+        st.success("MCP Server connected")
+        st.caption("http://localhost:8001/sse")
+    else:
+        st.error("MCP Server offline")
+        st.caption("Run: python mcp_server/server.py")
+
     if st.session_state.get("agent_ready"):
         st.success("Ollama connected")
         st.caption("Model: llama3")
